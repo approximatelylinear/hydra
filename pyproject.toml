@@ -1,0 +1,50 @@
+[project]
+name = "hydra"
+version = "0.1.0"
+description = "Hypernet-conditioned retrieval: encode a wide distribution of embedding tasks"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "transformers>=4.36",
+    "sentence-transformers>=2.2",
+    "datasets>=2.14",
+    "beir>=2.0",
+    "rank-bm25>=0.2",
+    "faiss-cpu>=1.7",
+    "einops>=0.7",
+    "pydantic>=2.0",
+    "wandb>=0.16",
+    "typer>=0.9",
+    "rich>=13.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=7.0",
+    "ruff>=0.1",
+    "pyright>=1.1",
+    "ipython",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+reportMissingTypeStubs = false
+reportUnknownMemberType = false
+reportUnknownParameterType = false
+reportUnknownVariableType = false
+reportUnknownArgumentType = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

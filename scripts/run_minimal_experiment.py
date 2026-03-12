@@ -106,13 +106,14 @@ def main():
         config=config,
     )
 
-    # --- 4. Evaluate per task ---
-    logger.info("\n--- Evaluation ---")
+    # --- 4. Evaluate with generic conditioning (same as training) ---
+    generic_task = "Retrieve relevant documents for diverse information needs"
+    logger.info("\n--- Evaluation (generic conditioning) ---")
     logger.info(f"{'Dataset':15s} | {'MRR@10':>8s} | {'NDCG@10':>8s} | {'Recall@100':>10s}")
     logger.info("-" * 55)
 
     for name, ds in datasets.items():
-        result = evaluate_retriever(retriever, ds)
+        result = evaluate_retriever(retriever, ds, task_text=generic_task)
         logger.info(str(result))
 
     # --- 5. Evaluate with task-specific conditioning ---
@@ -121,8 +122,7 @@ def main():
     logger.info("-" * 55)
 
     for name, ds in datasets.items():
-        # This time use the actual task card
-        result = evaluate_retriever(retriever, ds)
+        result = evaluate_retriever(retriever, ds)  # uses dataset.task_card
         logger.info(str(result))
 
 

@@ -32,11 +32,13 @@ class EvalResult:
 def evaluate_retriever(
     retriever: ConditionedRetriever,
     dataset: RetrievalDataset,
+    task_text: str | None = None,
     batch_size: int = 256,
 ) -> EvalResult:
     """Evaluate retriever on a BEIR-format dataset."""
     retriever.eval()
-    task_text = dataset.task_card.to_text() if dataset.task_card else dataset.name
+    if task_text is None:
+        task_text = dataset.task_card.to_text() if dataset.task_card else dataset.name
 
     with torch.no_grad():
         head_params = retriever.compile_task(task_text)

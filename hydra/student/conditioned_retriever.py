@@ -54,7 +54,7 @@ class ConditionedRetriever(nn.Module):
         with torch.no_grad():
             base_embs = self.base_encoder.encode(
                 texts, batch_size=batch_size, convert_to_tensor=True, normalize_embeddings=True
-            )
+            ).clone()  # clone to escape inference_mode tensors from sentence-transformers
         return ProjectionHeadGenerator.apply_head(base_embs, head_params)
 
     def score_pairs(

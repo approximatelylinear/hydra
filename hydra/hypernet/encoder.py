@@ -39,5 +39,5 @@ class TaskCardEncoder(nn.Module):
         with torch.no_grad():
             base_embs = self.encoder.encode(
                 task_texts, convert_to_tensor=True, normalize_embeddings=True
-            )
+            ).clone()  # clone to escape inference_mode tensors from sentence-transformers
         return self.projection(base_embs)

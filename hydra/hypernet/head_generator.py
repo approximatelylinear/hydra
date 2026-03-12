@@ -81,10 +81,18 @@ class ProjectionHeadGenerator(nn.Module):
         Returns:
             Projected embeddings, L2-normalized.
         """
-        W = head_params["weight"]  # (batch, embed_dim, out_dim)
-        bias = head_params["bias"]  # (batch, out_dim)
+        batch_size = embeddings.size(0)
+        W = head_params["weight"]  # (1 or batch, embed_dim, out_dim)
+        bias = head_params["bias"]  # (1 or batch, out_dim)
         scale = head_params["scale"]
         shift = head_params["shift"]
+
+        # Expand head params from (1, ...) to (batch, ...) if needed
+        if W.size(0) == 1 and batch_size > 1:
+            W = W.expand(batch_size, -1, -1)
+            bias = bias.expand(batch_size, -1)
+            scale = scale.expand(batch_size, -1)
+            shift = shift.expand(batch_size, -1)
 
         if embeddings.dim() == 2:
             # (batch, embed_dim) @ (batch, embed_dim, out_dim) -> (batch, out_dim)

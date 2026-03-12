@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import torch
+from sentence_transformers import SentenceTransformer
 
 from hydra.data.beir_loader import RetrievalDataset
 from hydra.eval.metrics import mrr_at_k, ndcg_at_k, recall_at_k
@@ -64,6 +65,56 @@ def evaluate_retriever(
         rankings.append([dataset.corpus_ids[idx] for idx in top_indices])
 
     # Filter to queries that have qrels
+    filtered_rankings = []
+    filtered_qrels = {}
+    for qid, ranking in zip(query_ids, rankings):
+        if qid in dataset.qrels:
+            filtered_rankings.append(ranking)
+            filtered_qrels[qid] = dataset.qrels[qid]
+
+    return EvalResult(
+        dataset=dataset.name,
+        mrr_10=mrr_at_k(filtered_rankings, filtered_qrels, k=10),
+        ndcg_10=ndcg_at_k(filtered_rankings, filtered_qrels, k=10),
+        recall_100=recall_at_k(filtered_rankings, filtered_qrels, k=100),
+    )
+
+
+def evaluate_baseline(
+    model_name: str,
+    dataset: RetrievalDataset,
+    batch_size: int = 256,
+) -> EvalResult:
+    """Evaluate frozen base encoder with no hypernet projection (baseline)."""
+    model = SentenceTransformer(model_name)
+    model.eval()
+
+    with torch.no_grad():
+        logger.info(f"[baseline] Encoding {len(dataset.corpus_texts)} docs...")
+        doc_embs = model.encode(
+            dataset.corpus_texts,
+            batch_size=batch_size,
+            show_progress_bar=True,
+            normalize_embeddings=True,
+        )
+
+        query_ids = list(dataset.queries.keys())
+        query_texts = [dataset.queries[qid] for qid in query_ids]
+        logger.info(f"[baseline] Encoding {len(query_texts)} queries...")
+        q_embs = model.encode(
+            query_texts,
+            batch_size=batch_size,
+            show_progress_bar=True,
+            normalize_embeddings=True,
+        )
+
+    sim_matrix = q_embs @ doc_embs.T
+
+    rankings = []
+    for i in range(len(query_ids)):
+        top_indices = np.argsort(-sim_matrix[i])[:100]
+        rankings.append([dataset.corpus_ids[idx] for idx in top_indices])
+
     filtered_rankings = []
     filtered_qrels = {}
     for qid, ranking in zip(query_ids, rankings):

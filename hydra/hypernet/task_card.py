@@ -19,8 +19,12 @@ class TaskCard(BaseModel):
     domain: str = ""  # e.g. "finance", "legal", "engineering"
     query_type: str = ""  # e.g. "factoid", "navigational", "keyword"
 
-    def to_text(self) -> str:
-        """Flatten to a single text block for encoding."""
+    def to_text(self, max_query_examples: int = 20, max_doc_examples: int = 10) -> str:
+        """Flatten to a single text block for encoding.
+
+        Includes as many exemplars as possible — these give the hypernet
+        distributional signal about the task, not just a description.
+        """
         parts = [
             f"Task: {self.name}",
             f"Description: {self.description}",
@@ -30,7 +34,13 @@ class TaskCard(BaseModel):
         if self.query_type:
             parts.append(f"Query type: {self.query_type}")
         if self.query_examples:
-            parts.append("Example queries: " + " | ".join(self.query_examples[:5]))
+            examples = self.query_examples[:max_query_examples]
+            parts.append("Example queries:")
+            for i, q in enumerate(examples, 1):
+                parts.append(f"  {i}. {q}")
         if self.doc_examples:
-            parts.append("Example docs: " + " | ".join(self.doc_examples[:3]))
+            examples = self.doc_examples[:max_doc_examples]
+            parts.append("Example documents:")
+            for i, d in enumerate(examples, 1):
+                parts.append(f"  {i}. {d}")
         return "\n".join(parts)

@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hydra.data.beir_loader import load_beir_dataset
 from hydra.data.preference_pairs import generate_preference_pairs
-from hydra.eval.evaluator import evaluate_retriever
+from hydra.eval.evaluator import evaluate_baseline, evaluate_retriever
 from hydra.student.conditioned_retriever import ConditionedRetriever
 from hydra.teachers.bm25 import BM25Teacher
 from hydra.teachers.dense import DenseTeacher
@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 DATASETS = ["scifact", "fiqa", "nfcorpus"]  # small BEIR datasets for fast iteration
 BASE_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 COND_DIM = 256
-OUT_DIM = 256
 CANDIDATES_PER_QUERY = 50
 PAIRS_PER_QUERY = 8
 
@@ -68,7 +67,7 @@ def main():
         ensemble = EnsembleTeacher()
         ensemble.teachers = [bm25, dense]
 
-        # Generate pairwise preferences
+        # Generate pairwise preferences tagged with task name
         query_texts = list(ds.queries.values())
         pairs = generate_preference_pairs(
             queries=query_texts,
@@ -76,19 +75,24 @@ def main():
             teacher=ensemble,
             candidates_per_query=CANDIDATES_PER_QUERY,
             pairs_per_query=PAIRS_PER_QUERY,
+            task_name=name,
         )
         logger.info(f"  Generated {len(pairs)} preference pairs for {name}")
         all_pairs.extend(pairs)
 
     logger.info(f"\nTotal preference pairs across all tasks: {len(all_pairs)}")
 
-    # --- 3. Train hypernet ---
-    logger.info("\n--- Training hypernet ---")
+    # --- 3. Train hypernet with per-task batching ---
+    logger.info("\n--- Training hypernet (per-task batching) ---")
     retriever = ConditionedRetriever(
         base_model=BASE_MODEL,
         cond_dim=COND_DIM,
-        out_dim=OUT_DIM,
     )
+
+    # Build task card texts for each dataset
+    task_cards = {}
+    for name, ds in datasets.items():
+        task_cards[name] = ds.task_card.to_text() if ds.task_card else name
 
     config = TrainConfig(
         lr=1e-4,
@@ -97,16 +101,23 @@ def main():
         device=device,
     )
 
-    # For the minimal experiment, train on all pairs with a generic task description
-    # In a real setup, you'd batch by task and use per-task cards
     retriever = train_hypernet(
         retriever=retriever,
         pairs=all_pairs,
-        task_text="Retrieve relevant documents for diverse information needs",
+        task_cards=task_cards,
         config=config,
     )
 
-    # --- 4. Evaluate with generic conditioning (same as training) ---
+    # --- 4. Baseline: frozen encoder with no projection ---
+    logger.info("\n--- Evaluation (baseline: frozen encoder, no hypernet) ---")
+    logger.info(f"{'Dataset':15s} | {'MRR@10':>8s} | {'NDCG@10':>8s} | {'Recall@100':>10s}")
+    logger.info("-" * 55)
+
+    for name, ds in datasets.items():
+        result = evaluate_baseline(BASE_MODEL, ds)
+        logger.info(str(result))
+
+    # --- 5. Evaluate with generic conditioning ---
     generic_task = "Retrieve relevant documents for diverse information needs"
     logger.info("\n--- Evaluation (generic conditioning) ---")
     logger.info(f"{'Dataset':15s} | {'MRR@10':>8s} | {'NDCG@10':>8s} | {'Recall@100':>10s}")
@@ -116,7 +127,7 @@ def main():
         result = evaluate_retriever(retriever, ds, task_text=generic_task)
         logger.info(str(result))
 
-    # --- 5. Evaluate with task-specific conditioning ---
+    # --- 6. Evaluate with task-specific conditioning ---
     logger.info("\n--- Evaluation (task-conditioned) ---")
     logger.info(f"{'Dataset':15s} | {'MRR@10':>8s} | {'NDCG@10':>8s} | {'Recall@100':>10s}")
     logger.info("-" * 55)

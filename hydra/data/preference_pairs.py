@@ -16,6 +16,7 @@ class PreferencePair:
     doc_pos: str
     doc_neg: str
     margin: float = 0.0  # teacher score difference (for weighting)
+    task_name: str = ""  # which task this pair belongs to
 
 
 def generate_preference_pairs(
@@ -24,6 +25,7 @@ def generate_preference_pairs(
     teacher,
     candidates_per_query: int = 100,
     pairs_per_query: int = 10,
+    task_name: str = "",
     seed: int = 42,
 ) -> list[PreferencePair]:
     """Generate pairwise preferences from teacher rankings.
@@ -71,6 +73,7 @@ def generate_preference_pairs(
                         doc_pos=corpus_texts[pos_doc_idx],
                         doc_neg=corpus_texts[neg_doc_idx],
                         margin=margin,
+                        task_name=task_name,
                     )
                 )
 

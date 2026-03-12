@@ -1,4 +1,4 @@
-"""Conditioned retriever: frozen base encoder + hypernet-generated projection head."""
+"""Conditioned retriever: frozen base encoder + hypernet-generated residual adaptation."""
 
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ class ConditionedRetriever(nn.Module):
         self,
         base_model: str = "sentence-transformers/all-MiniLM-L6-v2",
         cond_dim: int = 256,
-        out_dim: int = 256,
     ):
         super().__init__()
         self.base_encoder = SentenceTransformer(base_model)
@@ -35,9 +34,7 @@ class ConditionedRetriever(nn.Module):
         assert embed_dim is not None, f"Could not determine embedding dim for {base_model}"
 
         self.task_encoder = TaskCardEncoder(base_model=base_model, cond_dim=cond_dim)
-        self.head_gen = ProjectionHeadGenerator(
-            cond_dim=cond_dim, embed_dim=embed_dim, out_dim=out_dim
-        )
+        self.head_gen = ProjectionHeadGenerator(cond_dim=cond_dim, embed_dim=embed_dim)
 
     def compile_task(self, task_text: str) -> dict[str, torch.Tensor]:
         """Compile a task card into projection head parameters (cache-friendly)."""

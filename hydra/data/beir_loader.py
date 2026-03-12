@@ -102,9 +102,11 @@ def load_beir_dataset(
         },
     )
 
-    # Add example queries to the card
-    sample_queries = list(queries.values())[:10]
-    card = TaskCard(query_examples=sample_queries, **card_data)
+    # Add example queries and docs to the card for richer conditioning
+    sample_queries = list(queries.values())[:20]
+    # Grab a few short doc snippets as exemplars
+    sample_docs = [text[:200] for text in list(flat_corpus.values())[:10]]
+    card = TaskCard(query_examples=sample_queries, doc_examples=sample_docs, **card_data)
 
     return RetrievalDataset(
         name=dataset_name,

@@ -1,39 +1,45 @@
-"""Projection head generator: hypernet that produces per-task embedding heads."""
+"""Projection head generator: hypernet that produces per-task residual adaptations."""
 
 from __future__ import annotations
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from einops import rearrange
 
 
 class ProjectionHeadGenerator(nn.Module):
-    """Given a task conditioning vector, generate a lightweight projection head.
+    """Given a task conditioning vector, generate a residual adaptation head.
 
-    The generated head maps base embeddings (embed_dim) to task-specific
-    embeddings (out_dim) via a linear projection + learned normalization params.
+    Instead of replacing the base embedding with a lossy projection, this generates
+    a small residual delta that *adjusts* the base embedding. The final output is:
 
-    This is the core "hypernet" — it outputs weights, not activations.
+        output = normalize(base_embedding + alpha * residual)
+
+    where both the residual transform and alpha are generated from the task card.
+    With an untrained hypernet, alpha starts near zero -> baseline performance.
+    Training can only improve from there.
     """
 
     def __init__(
         self,
         cond_dim: int = 256,
         embed_dim: int = 384,  # all-MiniLM-L6-v2 output dim
-        out_dim: int = 256,
     ):
         super().__init__()
         self.embed_dim = embed_dim
-        self.out_dim = out_dim
 
-        # Generate the projection matrix W (embed_dim x out_dim) and bias
-        n_weight_params = embed_dim * out_dim
-        n_bias_params = out_dim
-        # Plus LayerNorm scale + shift
-        n_norm_params = out_dim * 2
+        # Low-rank residual: generate two smaller matrices A (embed_dim x rank)
+        # and B (rank x embed_dim) so the residual is x @ A @ B + bias
+        # This keeps param count manageable vs full embed_dim x embed_dim
+        rank = 64
+        self.rank = rank
 
-        total_params = n_weight_params + n_bias_params + n_norm_params
+        n_A_params = embed_dim * rank
+        n_B_params = rank * embed_dim
+        n_bias_params = embed_dim
+        n_alpha = 1  # scalar mixing weight
+
+        total_params = n_A_params + n_B_params + n_bias_params + n_alpha
 
         self.param_gen = nn.Sequential(
             nn.Linear(cond_dim, cond_dim * 2),
@@ -43,67 +49,64 @@ class ProjectionHeadGenerator(nn.Module):
             nn.Linear(cond_dim * 2, total_params),
         )
 
-        self._weight_end = n_weight_params
-        self._bias_end = n_weight_params + n_bias_params
-        self._scale_end = self._bias_end + out_dim
+        # Initialize final layer to near-zero so alpha starts small
+        final_layer = self.param_gen[-1]
+        assert isinstance(final_layer, nn.Linear)
+        nn.init.zeros_(final_layer.weight)
+        nn.init.zeros_(final_layer.bias)
+
+        self._A_end = n_A_params
+        self._B_end = n_A_params + n_B_params
+        self._bias_end = self._B_end + n_bias_params
 
     def forward(self, cond: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Generate projection head parameters from conditioning vector.
+        """Generate residual head parameters from conditioning vector.
 
         Args:
             cond: (batch, cond_dim) conditioning vectors from TaskCardEncoder
 
         Returns:
-            Dict with keys 'weight', 'bias', 'scale', 'shift' — each batched.
+            Dict with keys 'A', 'B', 'bias', 'alpha' — each batched.
         """
         params = self.param_gen(cond)
 
-        W = rearrange(
-            params[:, : self._weight_end],
-            "b (d_in d_out) -> b d_in d_out",
-            d_in=self.embed_dim,
-            d_out=self.out_dim,
-        )
-        bias = params[:, self._weight_end : self._bias_end]
-        scale = params[:, self._bias_end : self._scale_end]
-        shift = params[:, self._scale_end :]
+        A = params[:, : self._A_end].view(-1, self.embed_dim, self.rank)
+        B = params[:, self._A_end : self._B_end].view(-1, self.rank, self.embed_dim)
+        bias = params[:, self._B_end : self._bias_end]
+        alpha = torch.sigmoid(params[:, self._bias_end :])  # (batch, 1), bounded [0, 1]
 
-        return {"weight": W, "bias": bias, "scale": scale, "shift": shift}
+        return {"A": A, "B": B, "bias": bias, "alpha": alpha}
 
     @staticmethod
     def apply_head(embeddings: torch.Tensor, head_params: dict[str, torch.Tensor]) -> torch.Tensor:
-        """Apply a generated projection head to base embeddings.
+        """Apply residual adaptation to base embeddings.
 
         Args:
-            embeddings: (batch, seq, embed_dim) or (batch, embed_dim)
-            head_params: output of forward() — each value is (1, ...) or (batch, ...)
+            embeddings: (batch, embed_dim)
+            head_params: output of forward()
 
         Returns:
-            Projected embeddings, L2-normalized.
+            Adapted embeddings, L2-normalized. Same dimensionality as input.
         """
         batch_size = embeddings.size(0)
-        W = head_params["weight"]  # (1 or batch, embed_dim, out_dim)
-        bias = head_params["bias"]  # (1 or batch, out_dim)
-        scale = head_params["scale"]
-        shift = head_params["shift"]
+        A = head_params["A"]
+        B = head_params["B"]
+        bias = head_params["bias"]
+        alpha = head_params["alpha"]
 
-        # Expand head params from (1, ...) to (batch, ...) if needed
-        if W.size(0) == 1 and batch_size > 1:
-            W = W.expand(batch_size, -1, -1)
+        # Expand from (1, ...) to (batch, ...) if needed
+        if A.size(0) == 1 and batch_size > 1:
+            A = A.expand(batch_size, -1, -1)
+            B = B.expand(batch_size, -1, -1)
             bias = bias.expand(batch_size, -1)
-            scale = scale.expand(batch_size, -1)
-            shift = shift.expand(batch_size, -1)
+            alpha = alpha.expand(batch_size, -1)
 
-        if embeddings.dim() == 2:
-            # (batch, embed_dim) @ (batch, embed_dim, out_dim) -> (batch, out_dim)
-            projected = torch.bmm(embeddings.unsqueeze(1), W).squeeze(1) + bias
-        else:
-            # (batch, seq, embed_dim) @ (batch, embed_dim, out_dim) -> (batch, seq, out_dim)
-            projected = torch.bmm(embeddings, W) + bias.unsqueeze(1)
+        # Low-rank residual: x @ A @ B + bias
+        # (batch, 1, embed_dim) @ (batch, embed_dim, rank) -> (batch, 1, rank)
+        # (batch, 1, rank) @ (batch, rank, embed_dim) -> (batch, 1, embed_dim)
+        residual = torch.bmm(torch.bmm(embeddings.unsqueeze(1), A), B).squeeze(1) + bias
 
-        # Learned LayerNorm
-        projected = F.layer_norm(projected, [projected.size(-1)])
-        projected = projected * (1 + scale.unsqueeze(-2) if projected.dim() == 3 else 1 + scale)
-        projected = projected + (shift.unsqueeze(-2) if projected.dim() == 3 else shift)
+        # Mix: base + alpha * residual
+        adapted = embeddings + alpha * residual
 
-        return F.normalize(projected, p=2, dim=-1)
+        return F.normalize(adapted, p=2, dim=-1)

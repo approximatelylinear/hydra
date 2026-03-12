@@ -8,14 +8,29 @@ General-purpose embedding models work reasonably well across domains, but specia
 
 Hydra solves this by training a **hypernet** that takes a task description (a "task card") and generates a lightweight projection head on the fly. The base encoder stays frozen. You describe what "relevance" means for your task, and Hydra compiles that into a task-specific embedding space.
 
-```
-task card  -->  [TaskCardEncoder]  -->  conditioning vector
-                                            |
-                                    [ProjectionHeadGenerator]
-                                            |
-                                      head parameters (W, b, scale, shift)
-                                            |
-query/doc  -->  [frozen encoder]  -->  base embedding  -->  [generated head]  -->  task embedding
+```mermaid
+graph LR
+    TC[Task Card] --> TCE[TaskCardEncoder]
+    TCE --> CV[Conditioning Vector]
+    CV --> PHG[ProjectionHeadGenerator]
+    PHG --> HP["Head Params<br/>(W, b, scale, shift)"]
+
+    QD[Query / Doc] --> FE[Frozen Encoder]
+    FE --> BE[Base Embedding]
+    BE --> GH[Generated Head]
+    HP --> GH
+    GH --> TE[Task Embedding]
+
+    style TC fill:#2d3748,stroke:#4a5568,color:#e2e8f0
+    style CV fill:#2d3748,stroke:#4a5568,color:#e2e8f0
+    style HP fill:#2d3748,stroke:#4a5568,color:#e2e8f0
+    style BE fill:#2d3748,stroke:#4a5568,color:#e2e8f0
+    style TE fill:#2d3748,stroke:#4a5568,color:#e2e8f0
+    style QD fill:#2d3748,stroke:#4a5568,color:#e2e8f0
+    style TCE fill:#1a365d,stroke:#2b6cb0,color:#bee3f8
+    style PHG fill:#1a365d,stroke:#2b6cb0,color:#bee3f8
+    style FE fill:#1a365d,stroke:#2b6cb0,color:#bee3f8
+    style GH fill:#1a365d,stroke:#2b6cb0,color:#bee3f8
 ```
 
 ## Architecture

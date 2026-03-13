@@ -33,9 +33,13 @@ class ProjectionHeadGenerator(nn.Module):
         self.embed_dim = embed_dim
         self.rank = rank
 
-        # Shared low-rank residual (learned via backprop, not generated)
-        self.A_shared = nn.Parameter(torch.randn(embed_dim, rank) * 0.01)
-        self.B_shared = nn.Parameter(torch.randn(rank, embed_dim) * 0.01)
+        # Frozen orthogonal projection (fixed feature extractor, not learned)
+        # FiLM modulation learns to select/combine these fixed features per task.
+        # Freezing prevents the collapse seen when A/B drift during extended training.
+        A_init = torch.nn.init.orthogonal_(torch.empty(embed_dim, rank))
+        B_init = torch.nn.init.orthogonal_(torch.empty(rank, embed_dim))
+        self.register_buffer("A_shared", A_init)
+        self.register_buffer("B_shared", B_init)
 
         # FiLM parameter generator: produce gamma, beta, alpha from conditioning
         n_film_params = embed_dim + embed_dim + 1  # gamma + beta + alpha

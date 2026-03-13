@@ -137,21 +137,11 @@ def train_hypernet(
     device = torch.device(config.device)
     retriever = retriever.to(device)
 
-    # Only optimize hypernet params (not base encoder)
-    # Shared residual matrices (A_shared, B_shared) get stronger weight decay
-    # to prevent them from overwhelming base embeddings during extended training
-    shared_residual_params = []
-    other_head_params = []
-    for name, param in retriever.head_gen.named_parameters():
-        if "shared" in name:
-            shared_residual_params.append(param)
-        else:
-            other_head_params.append(param)
-
+    # Only optimize hypernet params (not base encoder, not frozen A/B buffers)
     trainable = [
         {"params": retriever.task_encoder.projection.parameters()},
-        {"params": other_head_params},
-        {"params": shared_residual_params, "weight_decay": 0.1},
+        {"params": retriever.task_encoder.attn_pool.parameters()},
+        {"params": retriever.head_gen.param_gen.parameters()},
     ]
     optimizer = AdamW(trainable, lr=config.lr, weight_decay=0.01)
 

@@ -33,13 +33,11 @@ class ProjectionHeadGenerator(nn.Module):
         self.embed_dim = embed_dim
         self.rank = rank
 
-        # Frozen orthogonal projection (fixed feature extractor, not learned)
-        # FiLM modulation learns to select/combine these fixed features per task.
-        # Freezing prevents the collapse seen when A/B drift during extended training.
-        A_init = torch.nn.init.orthogonal_(torch.empty(embed_dim, rank))
-        B_init = torch.nn.init.orthogonal_(torch.empty(rank, embed_dim))
-        self.register_buffer("A_shared", A_init)
-        self.register_buffer("B_shared", B_init)
+        # Low-rank residual with orthogonal initialization.
+        # These are trainable but should be frozen after warmup epochs to prevent
+        # the long-term drift that causes embedding collapse at scale.
+        self.A_shared = nn.Parameter(torch.nn.init.orthogonal_(torch.empty(embed_dim, rank)))
+        self.B_shared = nn.Parameter(torch.nn.init.orthogonal_(torch.empty(rank, embed_dim)))
 
         # FiLM parameter generator: produce gamma, beta, alpha from conditioning
         n_film_params = embed_dim + embed_dim + 1  # gamma + beta + alpha

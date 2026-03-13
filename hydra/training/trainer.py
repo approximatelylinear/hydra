@@ -113,6 +113,7 @@ class TrainConfig:
     temperature: float = 0.05
     checkpoint_dir: str = "checkpoints"
     log_every: int = 50
+    ab_warmup_epochs: int = 3
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
@@ -137,11 +138,13 @@ def train_hypernet(
     device = torch.device(config.device)
     retriever = retriever.to(device)
 
-    # Only optimize hypernet params (not base encoder, not frozen A/B buffers)
+    # Only optimize hypernet params (not base encoder)
+    # A/B are trainable during warmup, then frozen to prevent drift
     trainable = [
         {"params": retriever.task_encoder.projection.parameters()},
         {"params": retriever.task_encoder.attn_pool.parameters()},
         {"params": retriever.head_gen.param_gen.parameters()},
+        {"params": [retriever.head_gen.A_shared, retriever.head_gen.B_shared]},
     ]
     optimizer = AdamW(trainable, lr=config.lr, weight_decay=0.01)
 
@@ -193,6 +196,12 @@ def train_hypernet(
 
         avg_loss = epoch_loss / max(len(loader), 1)
         logger.info(f"Epoch {epoch + 1}/{config.epochs} | Avg Loss: {avg_loss:.4f}")
+
+        # Freeze A/B after warmup to prevent long-term drift
+        if epoch + 1 == config.ab_warmup_epochs:
+            retriever.head_gen.A_shared.requires_grad_(False)
+            retriever.head_gen.B_shared.requires_grad_(False)
+            logger.info(f"Froze A_shared/B_shared after {config.ab_warmup_epochs} warmup epochs")
 
     # Save checkpoint
     ckpt_dir = Path(config.checkpoint_dir)

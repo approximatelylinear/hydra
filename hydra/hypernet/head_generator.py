@@ -27,7 +27,7 @@ class ProjectionHeadGenerator(nn.Module):
         self,
         cond_dim: int = 256,
         embed_dim: int = 384,  # all-MiniLM-L6-v2 output dim
-        rank: int = 64,
+        rank: int = 128,
     ):
         super().__init__()
         self.embed_dim = embed_dim

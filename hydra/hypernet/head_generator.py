@@ -1,4 +1,4 @@
-"""Projection head generator: hypernet that produces per-task residual adaptations."""
+"""Projection head generator: FiLM-conditioned residual adaptation."""
 
 from __future__ import annotations
 
@@ -8,78 +8,85 @@ import torch.nn.functional as F
 
 
 class ProjectionHeadGenerator(nn.Module):
-    """Given a task conditioning vector, generate a residual adaptation head.
+    """Given a task conditioning vector, generate FiLM modulation parameters.
 
-    Instead of replacing the base embedding with a lossy projection, this generates
-    a small residual delta that *adjusts* the base embedding. The final output is:
+    Instead of generating full weight matrices per task, this uses shared learned
+    low-rank residual matrices (A, B) and generates only lightweight FiLM
+    scale/shift parameters (gamma, beta) plus a mixing weight (alpha) per task.
 
-        output = normalize(base_embedding + alpha * residual)
+    The final output is:
+        residual = x @ A_shared @ B_shared
+        modulated = gamma * residual + beta
+        output = normalize(x + alpha * modulated)
 
-    where both the residual transform and alpha are generated from the task card.
-    With an untrained hypernet, alpha starts near zero -> baseline performance.
-    Training can only improve from there.
+    This is much easier to train with few tasks — the hypernet only needs to learn
+    how to modulate, not how to construct an entire linear transform.
     """
 
     def __init__(
         self,
         cond_dim: int = 256,
         embed_dim: int = 384,  # all-MiniLM-L6-v2 output dim
+        rank: int = 64,
     ):
         super().__init__()
         self.embed_dim = embed_dim
-
-        # Low-rank residual: generate two smaller matrices A (embed_dim x rank)
-        # and B (rank x embed_dim) so the residual is x @ A @ B + bias
-        # This keeps param count manageable vs full embed_dim x embed_dim
-        rank = 64
         self.rank = rank
 
-        n_A_params = embed_dim * rank
-        n_B_params = rank * embed_dim
-        n_bias_params = embed_dim
-        n_alpha = 1  # scalar mixing weight
+        # Shared low-rank residual (learned via backprop, not generated)
+        self.A_shared = nn.Parameter(torch.randn(embed_dim, rank) * 0.01)
+        self.B_shared = nn.Parameter(torch.randn(rank, embed_dim) * 0.01)
 
-        total_params = n_A_params + n_B_params + n_bias_params + n_alpha
-
+        # FiLM parameter generator: produce gamma, beta, alpha from conditioning
+        n_film_params = embed_dim + embed_dim + 1  # gamma + beta + alpha
         self.param_gen = nn.Sequential(
             nn.Linear(cond_dim, cond_dim * 2),
             nn.GELU(),
             nn.Linear(cond_dim * 2, cond_dim * 2),
             nn.GELU(),
-            nn.Linear(cond_dim * 2, total_params),
+            nn.Linear(cond_dim * 2, n_film_params),
         )
 
-        # Initialize final layer to near-zero so alpha starts small
+        # Initialize final layer so gamma≈1, beta≈0, alpha≈0
         final_layer = self.param_gen[-1]
         assert isinstance(final_layer, nn.Linear)
         nn.init.zeros_(final_layer.weight)
-        nn.init.zeros_(final_layer.bias)
+        # gamma bias = 0 → sigmoid(0) * 2 = 1.0 (identity scale)
+        # beta bias = 0 (no shift)
+        # alpha bias = -2 → sigmoid(-2) ≈ 0.12 (small initial mixing)
+        bias_init = torch.zeros(n_film_params)
+        bias_init[-1] = -2.0  # alpha starts small
+        final_layer.bias = nn.Parameter(bias_init)
 
-        self._A_end = n_A_params
-        self._B_end = n_A_params + n_B_params
-        self._bias_end = self._B_end + n_bias_params
+        self._gamma_end = embed_dim
+        self._beta_end = embed_dim * 2
 
     def forward(self, cond: torch.Tensor) -> dict[str, torch.Tensor]:
-        """Generate residual head parameters from conditioning vector.
+        """Generate FiLM modulation parameters from conditioning vector.
 
         Args:
             cond: (batch, cond_dim) conditioning vectors from TaskCardEncoder
 
         Returns:
-            Dict with keys 'A', 'B', 'bias', 'alpha' — each batched.
+            Dict with keys 'gamma', 'beta', 'alpha', 'A', 'B'.
         """
         params = self.param_gen(cond)
 
-        A = params[:, : self._A_end].view(-1, self.embed_dim, self.rank)
-        B = params[:, self._A_end : self._B_end].view(-1, self.rank, self.embed_dim)
-        bias = params[:, self._B_end : self._bias_end]
-        alpha = torch.sigmoid(params[:, self._bias_end :])  # (batch, 1), bounded [0, 1]
+        # gamma: scale factor, centered around 1 via sigmoid * 2
+        gamma = torch.sigmoid(params[:, : self._gamma_end]) * 2.0  # (batch, embed_dim), range [0, 2]
+        beta = params[:, self._gamma_end : self._beta_end]  # (batch, embed_dim)
+        alpha = torch.sigmoid(params[:, self._beta_end :])  # (batch, 1), range [0, 1]
 
-        return {"A": A, "B": B, "bias": bias, "alpha": alpha}
+        # Expand shared matrices to batch dim
+        batch_size = cond.size(0)
+        A = self.A_shared.unsqueeze(0).expand(batch_size, -1, -1)
+        B = self.B_shared.unsqueeze(0).expand(batch_size, -1, -1)
+
+        return {"A": A, "B": B, "gamma": gamma, "beta": beta, "alpha": alpha}
 
     @staticmethod
     def apply_head(embeddings: torch.Tensor, head_params: dict[str, torch.Tensor]) -> torch.Tensor:
-        """Apply residual adaptation to base embeddings.
+        """Apply FiLM-modulated residual adaptation to base embeddings.
 
         Args:
             embeddings: (batch, embed_dim)
@@ -91,22 +98,25 @@ class ProjectionHeadGenerator(nn.Module):
         batch_size = embeddings.size(0)
         A = head_params["A"]
         B = head_params["B"]
-        bias = head_params["bias"]
+        gamma = head_params["gamma"]
+        beta = head_params["beta"]
         alpha = head_params["alpha"]
 
         # Expand from (1, ...) to (batch, ...) if needed
         if A.size(0) == 1 and batch_size > 1:
             A = A.expand(batch_size, -1, -1)
             B = B.expand(batch_size, -1, -1)
-            bias = bias.expand(batch_size, -1)
+            gamma = gamma.expand(batch_size, -1)
+            beta = beta.expand(batch_size, -1)
             alpha = alpha.expand(batch_size, -1)
 
-        # Low-rank residual: x @ A @ B + bias
-        # (batch, 1, embed_dim) @ (batch, embed_dim, rank) -> (batch, 1, rank)
-        # (batch, 1, rank) @ (batch, rank, embed_dim) -> (batch, 1, embed_dim)
-        residual = torch.bmm(torch.bmm(embeddings.unsqueeze(1), A), B).squeeze(1) + bias
+        # Shared low-rank residual: x @ A @ B
+        residual = torch.bmm(torch.bmm(embeddings.unsqueeze(1), A), B).squeeze(1)
 
-        # Mix: base + alpha * residual
-        adapted = embeddings + alpha * residual
+        # FiLM modulation: gamma * residual + beta
+        modulated = gamma * residual + beta
+
+        # Mix: base + alpha * modulated
+        adapted = embeddings + alpha * modulated
 
         return F.normalize(adapted, p=2, dim=-1)

@@ -138,9 +138,20 @@ def train_hypernet(
     retriever = retriever.to(device)
 
     # Only optimize hypernet params (not base encoder)
+    # Shared residual matrices (A_shared, B_shared) get stronger weight decay
+    # to prevent them from overwhelming base embeddings during extended training
+    shared_residual_params = []
+    other_head_params = []
+    for name, param in retriever.head_gen.named_parameters():
+        if "shared" in name:
+            shared_residual_params.append(param)
+        else:
+            other_head_params.append(param)
+
     trainable = [
         {"params": retriever.task_encoder.projection.parameters()},
-        {"params": retriever.head_gen.parameters()},
+        {"params": other_head_params},
+        {"params": shared_residual_params, "weight_decay": 0.1},
     ]
     optimizer = AdamW(trainable, lr=config.lr, weight_decay=0.01)
 

@@ -75,7 +75,7 @@ class ProjectionHeadGenerator(nn.Module):
         # gamma: scale factor, centered around 1 via sigmoid * 2
         gamma = torch.sigmoid(params[:, : self._gamma_end]) * 2.0  # (batch, embed_dim), range [0, 2]
         beta = params[:, self._gamma_end : self._beta_end]  # (batch, embed_dim)
-        alpha = torch.sigmoid(params[:, self._beta_end :])  # (batch, 1), range [0, 1]
+        alpha = torch.sigmoid(params[:, self._beta_end :]) * 0.3  # (batch, 1), range [0, 0.3]
 
         # Expand shared matrices to batch dim
         batch_size = cond.size(0)

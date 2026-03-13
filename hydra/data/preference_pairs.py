@@ -25,6 +25,7 @@ def generate_preference_pairs(
     teacher,
     candidates_per_query: int = 100,
     pairs_per_query: int = 10,
+    hard_negative_ratio: float = 0.5,
     task_name: str = "",
     seed: int = 42,
 ) -> list[PreferencePair]:
@@ -33,13 +34,19 @@ def generate_preference_pairs(
     For each query:
     1. Sample candidate docs (or use all if corpus is small)
     2. Get teacher scores
-    3. Extract pairs with margin filtering
+    3. Extract pairs — mix of hard negatives (near the decision boundary)
+       and easy negatives (for stable gradients)
 
-    This distills orderings, not raw scores — robust to teacher miscalibration.
+    Args:
+        hard_negative_ratio: Fraction of pairs that use hard negatives
+            (rank 5-20 region). Rest use easy negatives (bottom half).
     """
     rng = random.Random(seed)
     n_docs = len(corpus_texts)
     pairs = []
+
+    n_hard = int(pairs_per_query * hard_negative_ratio)
+    n_easy = pairs_per_query - n_hard
 
     for query in queries:
         # Sample candidate indices
@@ -52,31 +59,70 @@ def generate_preference_pairs(
         scores = teacher.rank(query, doc_indices)
         ranked = np.argsort(-scores)
 
-        # Generate pairs: top vs bottom half with margin
         n = len(ranked)
-        top_half = ranked[: n // 4]  # top quartile
-        bottom_half = ranked[n // 2 :]  # bottom half
+        top_docs = ranked[:3]  # top-3 positives
+        hard_neg_pool = ranked[5:20] if n > 20 else ranked[3 : n // 2]  # near misses
+        easy_neg_pool = ranked[n // 2 :]  # bottom half
+
+        if len(hard_neg_pool) == 0 or len(easy_neg_pool) == 0 or len(top_docs) == 0:
+            continue
 
         query_pairs = []
-        for _ in range(pairs_per_query):
-            pos_rank_idx = rng.choice(top_half)
-            neg_rank_idx = rng.choice(bottom_half)
 
-            pos_doc_idx = doc_indices[pos_rank_idx]
-            neg_doc_idx = doc_indices[neg_rank_idx]
+        # Hard negatives: top-3 vs rank 5-20
+        for _ in range(n_hard):
+            pos_rank_idx = rng.choice(top_docs)
+            neg_rank_idx = rng.choice(hard_neg_pool)
+            _maybe_add_pair(
+                query,
+                scores,
+                pos_rank_idx,
+                neg_rank_idx,
+                doc_indices,
+                corpus_texts,
+                task_name,
+                query_pairs,
+            )
 
-            margin = float(scores[pos_rank_idx] - scores[neg_rank_idx])
-            if margin > 0:
-                query_pairs.append(
-                    PreferencePair(
-                        query=query,
-                        doc_pos=corpus_texts[pos_doc_idx],
-                        doc_neg=corpus_texts[neg_doc_idx],
-                        margin=margin,
-                        task_name=task_name,
-                    )
-                )
+        # Easy negatives: top-3 vs bottom half
+        for _ in range(n_easy):
+            pos_rank_idx = rng.choice(top_docs)
+            neg_rank_idx = rng.choice(easy_neg_pool)
+            _maybe_add_pair(
+                query,
+                scores,
+                pos_rank_idx,
+                neg_rank_idx,
+                doc_indices,
+                corpus_texts,
+                task_name,
+                query_pairs,
+            )
 
         pairs.extend(query_pairs)
 
     return pairs
+
+
+def _maybe_add_pair(
+    query: str,
+    scores: np.ndarray,
+    pos_rank_idx: int,
+    neg_rank_idx: int,
+    doc_indices: list[int],
+    corpus_texts: list[str],
+    task_name: str,
+    out: list[PreferencePair],
+) -> None:
+    """Add a pair if the margin is positive."""
+    margin = float(scores[pos_rank_idx] - scores[neg_rank_idx])
+    if margin > 0:
+        out.append(
+            PreferencePair(
+                query=query,
+                doc_pos=corpus_texts[doc_indices[pos_rank_idx]],
+                doc_neg=corpus_texts[doc_indices[neg_rank_idx]],
+                margin=margin,
+                task_name=task_name,
+            )
+        )

@@ -42,6 +42,42 @@ BEIR_TASK_CARDS: dict[str, dict] = {
         "domain": "scientific",
         "query_type": "claim_verification",
     },
+    "arguana": {
+        "name": "arguana",
+        "description": "Find the best counter-argument to a given argument",
+        "domain": "argumentation",
+        "query_type": "counter_argument",
+    },
+    "quora": {
+        "name": "quora",
+        "description": "Find duplicate questions that ask the same thing in different words",
+        "domain": "community_qa",
+        "query_type": "duplicate_detection",
+    },
+    "hotpotqa": {
+        "name": "hotpotqa",
+        "description": "Find Wikipedia passages needed to answer multi-hop factoid questions",
+        "domain": "wikipedia",
+        "query_type": "multi_hop_factoid",
+    },
+    "fever": {
+        "name": "fever",
+        "description": "Find Wikipedia evidence passages that support or refute factual claims",
+        "domain": "wikipedia",
+        "query_type": "fact_verification",
+    },
+    "climate-fever": {
+        "name": "climate-fever",
+        "description": "Find evidence passages that support or refute climate change claims",
+        "domain": "climate_science",
+        "query_type": "fact_verification",
+    },
+    "dbpedia-entity": {
+        "name": "dbpedia-entity",
+        "description": "Find relevant Wikipedia entity pages given entity-seeking queries",
+        "domain": "wikipedia",
+        "query_type": "entity_retrieval",
+    },
 }
 
 

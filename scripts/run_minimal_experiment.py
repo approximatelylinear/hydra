@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Minimal experiment: train hypernet on multi-task teacher preferences, evaluate per-task.
+"""Multi-task experiment: train hypernet on diverse BEIR tasks with hard negatives.
 
-This is the "first thing to try" from the design notes:
 - Frozen all-MiniLM-L6-v2 base encoder
-- Hypernet generates 384->256 projection head from task card
+- Residual hypernet adaptation from task cards
 - Teacher = BM25 + dense bi-encoder fused by RRF
-- Train on pairwise preferences across mixed BEIR tasks
-- Evaluate per-task MRR/NDCG/Recall
+- Hard negatives (50% near-miss, 50% easy) for sharper discrimination
+- Per-task batching with task card conditioning
+- Evaluate: baseline vs generic vs task-conditioned
 """
 
 import logging
@@ -31,33 +31,52 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(
 logger = logging.getLogger(__name__)
 
 # --- Config ---
-DATASETS = ["scifact", "fiqa", "nfcorpus"]  # small BEIR datasets for fast iteration
+# Training tasks: diverse mix of domains and query types
+TRAIN_DATASETS = [
+    "scifact",  # scientific claim verification
+    "fiqa",  # financial QA
+    "nfcorpus",  # health/nutrition
+    "arguana",  # counter-argument retrieval
+    "quora",  # duplicate question detection
+    "scidocs",  # scientific paper similarity
+]
+
+# Eval tasks: includes training tasks + held-out tasks
+EVAL_DATASETS = [
+    "scifact",
+    "fiqa",
+    "nfcorpus",
+    "arguana",
+    "quora",
+    "scidocs",
+]
+
 BASE_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 COND_DIM = 256
-CANDIDATES_PER_QUERY = 50
-PAIRS_PER_QUERY = 8
+CANDIDATES_PER_QUERY = 100
+PAIRS_PER_QUERY = 16
+HARD_NEGATIVE_RATIO = 0.5
 
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     logger.info(f"Device: {device}")
 
-    # --- 1. Load datasets ---
-    logger.info("Loading BEIR datasets...")
-    datasets = {}
-    for name in DATASETS:
+    # --- 1. Load training datasets ---
+    logger.info("Loading training datasets...")
+    train_datasets = {}
+    for name in TRAIN_DATASETS:
         logger.info(f"  Loading {name}...")
-        datasets[name] = load_beir_dataset(name)
-        n_docs, n_queries = len(datasets[name].corpus), len(datasets[name].queries)
+        train_datasets[name] = load_beir_dataset(name)
+        n_docs, n_queries = len(train_datasets[name].corpus), len(train_datasets[name].queries)
         logger.info(f"  {name}: {n_docs} docs, {n_queries} queries")
 
     # --- 2. Build teachers and generate preferences per task ---
     all_pairs = []
 
-    for name, ds in datasets.items():
+    for name, ds in train_datasets.items():
         logger.info(f"\n--- Generating teacher preferences for {name} ---")
 
-        # Build per-dataset teachers (they need per-corpus indexing)
         bm25 = BM25Teacher()
         bm25.index(ds.corpus_texts)
 
@@ -67,7 +86,6 @@ def main():
         ensemble = EnsembleTeacher()
         ensemble.teachers = [bm25, dense]
 
-        # Generate pairwise preferences tagged with task name
         query_texts = list(ds.queries.values())
         pairs = generate_preference_pairs(
             queries=query_texts,
@@ -75,6 +93,7 @@ def main():
             teacher=ensemble,
             candidates_per_query=CANDIDATES_PER_QUERY,
             pairs_per_query=PAIRS_PER_QUERY,
+            hard_negative_ratio=HARD_NEGATIVE_RATIO,
             task_name=name,
         )
         logger.info(f"  Generated {len(pairs)} preference pairs for {name}")
@@ -82,22 +101,21 @@ def main():
 
     logger.info(f"\nTotal preference pairs across all tasks: {len(all_pairs)}")
 
-    # --- 3. Train hypernet with per-task batching ---
-    logger.info("\n--- Training hypernet (per-task batching) ---")
+    # --- 3. Train hypernet ---
+    logger.info("\n--- Training hypernet (per-task batching, hard negatives) ---")
     retriever = ConditionedRetriever(
         base_model=BASE_MODEL,
         cond_dim=COND_DIM,
     )
 
-    # Build task card texts for each dataset
     task_cards = {}
-    for name, ds in datasets.items():
+    for name, ds in train_datasets.items():
         task_cards[name] = ds.task_card.to_text() if ds.task_card else name
 
     config = TrainConfig(
         lr=1e-4,
         batch_size=32,
-        epochs=5,
+        epochs=15,
         device=device,
     )
 
@@ -108,32 +126,41 @@ def main():
         config=config,
     )
 
-    # --- 4. Baseline: frozen encoder with no projection ---
+    # --- 4. Load eval datasets (may overlap with training) ---
+    eval_datasets = {}
+    for name in EVAL_DATASETS:
+        if name in train_datasets:
+            eval_datasets[name] = train_datasets[name]
+        else:
+            logger.info(f"  Loading eval dataset {name}...")
+            eval_datasets[name] = load_beir_dataset(name)
+
+    # --- 5. Baseline: frozen encoder, no hypernet ---
     logger.info("\n--- Evaluation (baseline: frozen encoder, no hypernet) ---")
     logger.info(f"{'Dataset':15s} | {'MRR@10':>8s} | {'NDCG@10':>8s} | {'Recall@100':>10s}")
     logger.info("-" * 55)
 
-    for name, ds in datasets.items():
+    for name, ds in eval_datasets.items():
         result = evaluate_baseline(BASE_MODEL, ds)
         logger.info(str(result))
 
-    # --- 5. Evaluate with generic conditioning ---
+    # --- 6. Generic conditioning ---
     generic_task = "Retrieve relevant documents for diverse information needs"
     logger.info("\n--- Evaluation (generic conditioning) ---")
     logger.info(f"{'Dataset':15s} | {'MRR@10':>8s} | {'NDCG@10':>8s} | {'Recall@100':>10s}")
     logger.info("-" * 55)
 
-    for name, ds in datasets.items():
+    for name, ds in eval_datasets.items():
         result = evaluate_retriever(retriever, ds, task_text=generic_task)
         logger.info(str(result))
 
-    # --- 6. Evaluate with task-specific conditioning ---
+    # --- 7. Task-conditioned ---
     logger.info("\n--- Evaluation (task-conditioned) ---")
     logger.info(f"{'Dataset':15s} | {'MRR@10':>8s} | {'NDCG@10':>8s} | {'Recall@100':>10s}")
     logger.info("-" * 55)
 
-    for name, ds in datasets.items():
-        result = evaluate_retriever(retriever, ds)  # uses dataset.task_card
+    for name, ds in eval_datasets.items():
+        result = evaluate_retriever(retriever, ds)
         logger.info(str(result))
 
 

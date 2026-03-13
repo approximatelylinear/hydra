@@ -23,6 +23,7 @@ from hydra.data.preference_pairs import generate_preference_pairs
 from hydra.eval.evaluator import evaluate_baseline, evaluate_retriever
 from hydra.student.conditioned_retriever import ConditionedRetriever
 from hydra.teachers.bm25 import BM25Teacher
+from hydra.teachers.cross_encoder import CrossEncoderTeacher
 from hydra.teachers.dense import DenseTeacher
 from hydra.teachers.ensemble import EnsembleTeacher
 from hydra.training.trainer import TrainConfig, train_hypernet
@@ -37,17 +38,15 @@ TRAIN_DATASETS = [
     "fiqa",  # financial QA
     "nfcorpus",  # health/nutrition
     "arguana",  # counter-argument retrieval
-    "quora",  # duplicate question detection
     "scidocs",  # scientific paper similarity
 ]
 
-# Eval tasks: includes training tasks + held-out tasks
+# Eval tasks: includes training tasks
 EVAL_DATASETS = [
     "scifact",
     "fiqa",
     "nfcorpus",
     "arguana",
-    "quora",
     "scidocs",
 ]
 
@@ -83,8 +82,11 @@ def main():
         dense = DenseTeacher(model_name=BASE_MODEL)
         dense.index(ds.corpus_texts)
 
+        cross_enc = CrossEncoderTeacher()
+        cross_enc.index(ds.corpus_texts)
+
         ensemble = EnsembleTeacher()
-        ensemble.teachers = [bm25, dense]
+        ensemble.teachers = [bm25, dense, cross_enc]
 
         query_texts = list(ds.queries.values())
         pairs = generate_preference_pairs(

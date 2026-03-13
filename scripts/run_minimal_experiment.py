@@ -23,9 +23,9 @@ from hydra.data.preference_pairs import generate_preference_pairs
 from hydra.eval.evaluator import evaluate_baseline, evaluate_retriever
 from hydra.student.conditioned_retriever import ConditionedRetriever
 from hydra.teachers.bm25 import BM25Teacher
-from hydra.teachers.cross_encoder import CrossEncoderTeacher
 from hydra.teachers.dense import DenseTeacher
 from hydra.teachers.ensemble import EnsembleTeacher
+from hydra.teachers.jina_reranker import JinaRerankerTeacher
 from hydra.training.trainer import TrainConfig, train_hypernet
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
@@ -70,23 +70,26 @@ def main():
         n_docs, n_queries = len(train_datasets[name].corpus), len(train_datasets[name].queries)
         logger.info(f"  {name}: {n_docs} docs, {n_queries} queries")
 
-    # --- 2. Build teachers and generate preferences per task ---
+    # --- 2. Build teachers (shared across datasets) ---
+    logger.info("Initializing teachers...")
+    dense = DenseTeacher(model_name=BASE_MODEL)
+    reranker = JinaRerankerTeacher()
+
+    # --- 3. Generate preferences per task ---
     all_pairs = []
 
     for name, ds in train_datasets.items():
         logger.info(f"\n--- Generating teacher preferences for {name} ---")
 
-        bm25 = BM25Teacher()
+        bm25 = BM25Teacher()  # lightweight, per-corpus index is cheap
         bm25.index(ds.corpus_texts)
 
-        dense = DenseTeacher(model_name=BASE_MODEL)
         dense.index(ds.corpus_texts)
-
-        cross_enc = CrossEncoderTeacher()
-        cross_enc.index(ds.corpus_texts)
+        reranker.index(ds.corpus_texts)
 
         ensemble = EnsembleTeacher()
-        ensemble.teachers = [bm25, dense, cross_enc]
+        ensemble.teachers = [bm25, dense, reranker]
+        ensemble.weights = [1.0, 1.0, 3.0]  # reranker weighted 3x
 
         query_texts = list(ds.queries.values())
         pairs = generate_preference_pairs(
@@ -103,7 +106,7 @@ def main():
 
     logger.info(f"\nTotal preference pairs across all tasks: {len(all_pairs)}")
 
-    # --- 3. Train hypernet ---
+    # --- 4. Train hypernet ---
     logger.info("\n--- Training hypernet (per-task batching, hard negatives) ---")
     retriever = ConditionedRetriever(
         base_model=BASE_MODEL,
@@ -128,7 +131,7 @@ def main():
         config=config,
     )
 
-    # --- 4. Load eval datasets (may overlap with training) ---
+    # --- 5. Load eval datasets (may overlap with training) ---
     eval_datasets = {}
     for name in EVAL_DATASETS:
         if name in train_datasets:
@@ -137,7 +140,7 @@ def main():
             logger.info(f"  Loading eval dataset {name}...")
             eval_datasets[name] = load_beir_dataset(name)
 
-    # --- 5. Baseline: frozen encoder, no hypernet ---
+    # --- 6. Baseline: frozen encoder, no hypernet ---
     logger.info("\n--- Evaluation (baseline: frozen encoder, no hypernet) ---")
     logger.info(f"{'Dataset':15s} | {'MRR@10':>8s} | {'NDCG@10':>8s} | {'Recall@100':>10s}")
     logger.info("-" * 55)
@@ -146,7 +149,7 @@ def main():
         result = evaluate_baseline(BASE_MODEL, ds)
         logger.info(str(result))
 
-    # --- 6. Generic conditioning ---
+    # --- 7. Generic conditioning ---
     generic_task = "Retrieve relevant documents for diverse information needs"
     logger.info("\n--- Evaluation (generic conditioning) ---")
     logger.info(f"{'Dataset':15s} | {'MRR@10':>8s} | {'NDCG@10':>8s} | {'Recall@100':>10s}")
@@ -156,7 +159,7 @@ def main():
         result = evaluate_retriever(retriever, ds, task_text=generic_task)
         logger.info(str(result))
 
-    # --- 7. Task-conditioned ---
+    # --- 8. Task-conditioned ---
     logger.info("\n--- Evaluation (task-conditioned) ---")
     logger.info(f"{'Dataset':15s} | {'MRR@10':>8s} | {'NDCG@10':>8s} | {'Recall@100':>10s}")
     logger.info("-" * 55)

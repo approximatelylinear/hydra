@@ -16,10 +16,12 @@ class EnsembleTeacher:
     """
 
     teachers: list = field(default_factory=list)
+    weights: list[float] = field(default_factory=list)  # per-teacher RRF weights
     k: int = 60  # RRF constant
 
-    def add_teacher(self, teacher) -> None:
+    def add_teacher(self, teacher, weight: float = 1.0) -> None:
         self.teachers.append(teacher)
+        self.weights.append(weight)
 
     def index(self, corpus: list[str], **kwargs) -> None:
         for t in self.teachers:
@@ -28,12 +30,13 @@ class EnsembleTeacher:
             t.index(corpus, **supported)
 
     def _rrf_scores(self, rankings: list[np.ndarray], n_docs: int) -> np.ndarray:
-        """Compute RRF scores from multiple score arrays."""
+        """Compute weighted RRF scores from multiple score arrays."""
+        weights = self.weights if self.weights else [1.0] * len(rankings)
         fused = np.zeros(n_docs)
-        for scores in rankings:
+        for scores, weight in zip(rankings, weights):
             order = np.argsort(-scores)
             for rank, idx in enumerate(order):
-                fused[idx] += 1.0 / (self.k + rank + 1)
+                fused[idx] += weight / (self.k + rank + 1)
         return fused
 
     def rank(self, query: str, doc_indices: list[int] | None = None) -> np.ndarray:

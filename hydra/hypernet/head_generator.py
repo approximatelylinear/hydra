@@ -33,11 +33,12 @@ class ProjectionHeadGenerator(nn.Module):
         self.embed_dim = embed_dim
         self.rank = rank
 
-        # Low-rank residual with orthogonal initialization.
-        # These are trainable but should be frozen after warmup epochs to prevent
-        # the long-term drift that causes embedding collapse at scale.
-        self.A_shared = nn.Parameter(torch.nn.init.orthogonal_(torch.empty(embed_dim, rank)))
-        self.B_shared = nn.Parameter(torch.nn.init.orthogonal_(torch.empty(rank, embed_dim)))
+        # Frozen orthogonal projection (fixed feature extractor, not learned).
+        # Freezing prevents the collapse seen when A/B drift during extended training.
+        A_init = torch.nn.init.orthogonal_(torch.empty(embed_dim, rank))
+        B_init = torch.nn.init.orthogonal_(torch.empty(rank, embed_dim))
+        self.register_buffer("A_shared", A_init)
+        self.register_buffer("B_shared", B_init)
 
         # FiLM parameter generator: produce gamma, beta, alpha from conditioning
         n_film_params = embed_dim + embed_dim + 1  # gamma + beta + alpha
@@ -77,7 +78,7 @@ class ProjectionHeadGenerator(nn.Module):
         # gamma: scale factor, centered around 1 via sigmoid * 2
         gamma = torch.sigmoid(params[:, : self._gamma_end]) * 2.0  # (batch, embed_dim), range [0, 2]
         beta = params[:, self._gamma_end : self._beta_end]  # (batch, embed_dim)
-        alpha = torch.sigmoid(params[:, self._beta_end :]) * 0.3  # (batch, 1), range [0, 0.3]
+        alpha = torch.sigmoid(params[:, self._beta_end :]) * 0.5  # (batch, 1), range [0, 0.5]
 
         # Expand shared matrices to batch dim
         batch_size = cond.size(0)

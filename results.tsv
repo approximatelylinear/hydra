@@ -1,0 +1,18 @@
+commit	track	mode	scifact_ndcg10	fiqa_ndcg10	avg_ndcg10	task_vs_generic	status	description
+0597b29	baseline	quick	0.6451	0.3687	0.5069	n/a	keep	frozen MiniLM baseline (no hypernet)
+7268a7c	architecture	quick	0.6480	0.3740	0.5110	+0.0026	keep	FiLM conditioning: shared A/B + generated scale/shift per task
+b2cd0aa	architecture	quick	0.6473	0.3731	0.5102	+0.0007	discard	Deeper TaskCardEncoder projection (4 layers) — no improvement over 2-layer
+9fd29ee	architecture	quick	0.6491	0.3731	0.5111	+0.0019	discard	Rank=16 shared residual — marginal, worse task differentiation than rank=64
+df7be85	architecture	quick	0.6499	0.3742	0.5121	+0.0027	keep	Rank=128 shared residual — best avg NDCG and task delta
+df3eb0b	architecture	quick	0.6481	0.3742	0.5112	+0.0032	keep	Multi-exemplar encoder: attention-pool task card lines — best task_vs_generic
+8c3349c	architecture	quick	0.6465	0.3740	0.5103	+0.0010	discard	Wider FiLM MLP (cond_dim*4) — too much capacity, less differentiation
+7268a7c	architecture	extensive	0.5784	0.3241	0.3430	-0.0017	review	FiLM rank=64 COLLAPSED at full scale — avg NDCG below baseline on all 5 datasets
+d273664	architecture	extensive	0.6012	0.3361	0.3548	-0.0008	discard	FiLM alpha capped 0.3 — less collapse but still below baseline at scale
+3e9fe9e	architecture	extensive	0.6066	0.3398	0.3182	-0.0016	discard	FiLM + WD 0.1 on A/B — WORSE collapse, weight decay hurts learning without preventing drift
+185b344	architecture	quick	0.6474	0.3730	0.5102	+0.0025	keep	Frozen orthogonal A/B — strong task delta, no drift risk
+185b344	architecture	extensive	0.6439	0.3715	0.3827	-0.0002	keep	Frozen A/B — NO COLLAPSE (first!) but near-zero task differentiation
+c36fb23	architecture	quick	0.6455	0.3734	0.5095	+0.0013	keep	Warmup-then-freeze A/B (ortho init, 3-epoch warmup)
+c36fb23	architecture	extensive	0.6224	0.3605	0.3706	+0.0002	discard	Warmup-freeze A/B — still below baseline, 3 warmup epochs already cause drift
+020f764	architecture	quick	0.6470	0.3716	0.5093	+0.0010	discard	Frozen A/B alpha 0.5 — larger cap doesn't help differentiation
+0d136ff	architecture	quick	0.6483	0.3733	0.5108	+0.0024	keep	Direct FiLM (no A/B) — simplest, no collapse risk, strong task delta
+0d136ff	architecture	extensive	0.6444	0.3711	0.3829	-0.0001	review	Direct FiLM — BEST extensive: no collapse, matches baseline, some per-dataset gains

@@ -113,6 +113,9 @@ class TrainConfig:
     warmup_steps: int = 100
     temperature: float = 0.05
     contrastive_lambda: float = 0.0
+    neg_task_prob: float = 0.0
+    neg_task_margin: float = 0.1
+    neg_task_lambda: float = 0.0
     checkpoint_dir: str = "checkpoints"
     log_every: int = 50
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -160,14 +163,16 @@ def train_hypernet(
     retriever.train()
     global_step = 0
 
-    # Pre-collect all task texts for contrastive loss
+    # Pre-collect all task texts for contrastive loss and negative task conditioning
     all_task_names = list(task_cards.keys())
     all_task_texts = [task_cards[n] for n in all_task_names]
     use_contrastive = config.contrastive_lambda > 0 and len(all_task_names) > 1
+    use_neg_task = config.neg_task_lambda > 0 and len(all_task_names) > 1
 
     for epoch in range(config.epochs):
         epoch_loss = 0.0
         epoch_contrastive = 0.0
+        epoch_neg_task = 0.0
         sampler.set_epoch(epoch)
 
         for batch in loader:
@@ -193,12 +198,31 @@ def train_hypernet(
                 all_conds = retriever.task_encoder(all_task_texts)  # (n_tasks, cond_dim)
                 all_conds_norm = F.normalize(all_conds, p=2, dim=-1)
                 sim = all_conds_norm @ all_conds_norm.T  # (n_tasks, n_tasks)
-                # Zero out diagonal (self-similarity)
                 mask = ~torch.eye(len(all_task_names), dtype=torch.bool, device=sim.device)
-                # Minimize mean off-diagonal cosine similarity (push tasks apart)
                 contrastive_loss = sim[mask].mean()
                 loss = loss + config.contrastive_lambda * contrastive_loss
                 epoch_contrastive += contrastive_loss.item()
+
+            # Negative task conditioning: penalize when wrong task card works well
+            if use_neg_task and random.random() < config.neg_task_prob:
+                # Pick a random wrong task
+                other_tasks = [t for t in all_task_names if t != task_name]
+                wrong_name = random.choice(other_tasks)
+                wrong_text = task_cards[wrong_name]
+                wrong_params = retriever.compile_task(wrong_text)
+
+                # Score queries against positive docs with wrong task card
+                q_wrong = retriever.encode(batch["queries"], wrong_params)
+                pos_wrong = retriever.encode(batch["docs_pos"], wrong_params)
+                score_correct = (q_embs * pos_embs).sum(dim=-1)
+                score_wrong = (q_wrong * pos_wrong).sum(dim=-1)
+
+                # Margin loss: correct task should beat wrong task by a margin
+                neg_task_loss = torch.clamp(
+                    config.neg_task_margin - (score_correct - score_wrong), min=0.0
+                ).mean()
+                loss = loss + config.neg_task_lambda * neg_task_loss
+                epoch_neg_task += neg_task_loss.item()
 
             optimizer.zero_grad()
             loss.backward()
@@ -209,16 +233,15 @@ def train_hypernet(
             global_step += 1
 
             if global_step % config.log_every == 0:
-                extra = ""
-                if use_contrastive:
-                    extra = f" | Contrastive: {contrastive_loss.item():.4f}"
-                logger.info(f"Step {global_step} | Task: {task_name} | Loss: {loss.item():.4f}{extra}")
+                logger.info(f"Step {global_step} | Task: {task_name} | Loss: {loss.item():.4f}")
 
         n_batches = max(len(loader), 1)
         avg_loss = epoch_loss / n_batches
         log_msg = f"Epoch {epoch + 1}/{config.epochs} | Avg Loss: {avg_loss:.4f}"
         if use_contrastive:
-            log_msg += f" | Avg Contrastive: {epoch_contrastive / n_batches:.4f}"
+            log_msg += f" | Contrastive: {epoch_contrastive / n_batches:.4f}"
+        if use_neg_task:
+            log_msg += f" | NegTask: {epoch_neg_task / n_batches:.4f}"
         logger.info(log_msg)
 
     # Save checkpoint

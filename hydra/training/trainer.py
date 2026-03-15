@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
+import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, Dataset, Sampler
 
@@ -111,6 +112,7 @@ class TrainConfig:
     epochs: int = 10
     warmup_steps: int = 100
     temperature: float = 0.05
+    contrastive_lambda: float = 0.0
     checkpoint_dir: str = "checkpoints"
     log_every: int = 50
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -158,8 +160,14 @@ def train_hypernet(
     retriever.train()
     global_step = 0
 
+    # Pre-collect all task texts for contrastive loss
+    all_task_names = list(task_cards.keys())
+    all_task_texts = [task_cards[n] for n in all_task_names]
+    use_contrastive = config.contrastive_lambda > 0 and len(all_task_names) > 1
+
     for epoch in range(config.epochs):
         epoch_loss = 0.0
+        epoch_contrastive = 0.0
         sampler.set_epoch(epoch)
 
         for batch in loader:
@@ -180,6 +188,18 @@ def train_hypernet(
                 q_embs, pos_embs, neg_embs, margins, temperature=config.temperature
             )
 
+            # Cross-task contrastive loss on conditioning vectors
+            if use_contrastive:
+                all_conds = retriever.task_encoder(all_task_texts)  # (n_tasks, cond_dim)
+                all_conds_norm = F.normalize(all_conds, p=2, dim=-1)
+                sim = all_conds_norm @ all_conds_norm.T  # (n_tasks, n_tasks)
+                # Zero out diagonal (self-similarity)
+                mask = ~torch.eye(len(all_task_names), dtype=torch.bool, device=sim.device)
+                # Minimize mean off-diagonal cosine similarity (push tasks apart)
+                contrastive_loss = sim[mask].mean()
+                loss = loss + config.contrastive_lambda * contrastive_loss
+                epoch_contrastive += contrastive_loss.item()
+
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(retriever.parameters(), 1.0)
@@ -189,10 +209,17 @@ def train_hypernet(
             global_step += 1
 
             if global_step % config.log_every == 0:
-                logger.info(f"Step {global_step} | Task: {task_name} | Loss: {loss.item():.4f}")
+                extra = ""
+                if use_contrastive:
+                    extra = f" | Contrastive: {contrastive_loss.item():.4f}"
+                logger.info(f"Step {global_step} | Task: {task_name} | Loss: {loss.item():.4f}{extra}")
 
-        avg_loss = epoch_loss / max(len(loader), 1)
-        logger.info(f"Epoch {epoch + 1}/{config.epochs} | Avg Loss: {avg_loss:.4f}")
+        n_batches = max(len(loader), 1)
+        avg_loss = epoch_loss / n_batches
+        log_msg = f"Epoch {epoch + 1}/{config.epochs} | Avg Loss: {avg_loss:.4f}"
+        if use_contrastive:
+            log_msg += f" | Avg Contrastive: {epoch_contrastive / n_batches:.4f}"
+        logger.info(log_msg)
 
     # Save checkpoint
     ckpt_dir = Path(config.checkpoint_dir)

@@ -4,7 +4,7 @@ What we've tried, what worked, what to try next.
 
 ## What We Know
 
-### Architecture: 20 experiments, 3 key findings
+### Architecture: 22 experiments, 5 key findings
 
 **1. Trainable shared A/B matrices collapse at scale.**
 Quick experiments (3 epochs, 2 datasets) consistently show +0.002-0.003 task deltas with FiLM + shared low-rank residual. But every extensive experiment (15 epochs, 5 datasets) collapsed — generic NDCG dropped 5-17% below baseline. Three mitigation attempts all failed:
@@ -24,7 +24,13 @@ Removing A/B entirely and applying `gamma * x + beta` directly to embeddings sol
 **3. ColBERT multi-vector + direct FiLM shows the strongest task differentiation.**
 ColBERT with direct FiLM achieved avg task delta +0.0043 across 3 datasets — the best result in any experiment. Per-token modulation gives FiLM more surface area to influence the embedding space. Also: FiLM must be applied to both queries and docs at eval to match training; omitting docs caused catastrophic collapse (NDCG ~0.005).
 
-### Training signal: 5 experiments, 2 key findings
+**4. Separate query/doc FiLM parameters hurt task differentiation.**
+Splitting the ColBERT FiLM generator into separate query_head and doc_head (shared trunk) reduced task delta from +0.0043 to -0.0008. With only 3 tasks and 5 epochs, the doubled parameter count dilutes the gradient signal. Shared FiLM params remain optimal.
+
+**5. Neg task conditioning hurts ColBERT (but helps bi-encoder).**
+Porting the proven neg_task mechanism (prob=0.2, margin=0.1, lambda=0.5) to ColBERT reduced task delta from +0.0043 to +0.0006. The neg_task loss was tiny (0.0157) because MaxSim scores already naturally separate correct vs wrong task cards — the penalty rarely activates. The extra forward passes (2x query + doc encoding per neg_task step) add noise without benefit. Neg_task conditioning is only useful for architectures with limited modulation surface area (bi-encoder), not ColBERT.
+
+### Training signal: 7 experiments, 3 key findings
 
 **4. Cross-task contrastive loss on conditioning vectors is ineffective.**
 With only 2-5 tasks, the contrastive loss trivially saturates (cosine similarity → -1.0 within a few hundred steps). The conditioning vectors become orthogonal but the FiLM generator still produces similar modulation — orthogonal inputs don't guarantee functionally different outputs. Tested lambda=0.1 and 0.5; neither improved task delta over baseline. Not worth pursuing unless task count increases significantly (20+).
@@ -59,12 +65,14 @@ Per-dataset extensive results:
 | Alpha cap | 0.3 | 0.5 didn't help; 0.1 too constrained |
 | Bi-encoder base model | all-MiniLM-L6-v2 (frozen) | Prototyping model, Nomic later |
 | ColBERT base model | colbertv2.0 (frozen) | Standard ColBERT |
+| ColBERT FiLM params | Shared (not split query/doc) | Split doubled params, diluted gradient, worse delta |
 
 ### Training signal decisions locked in
 
 | Decision | Chosen | Why |
 |---|---|---|
-| Negative task conditioning | prob=0.2, margin=0.1, lambda=0.5 | First method to produce positive task delta at scale |
+| Negative task conditioning (bi-encoder) | prob=0.2, margin=0.1, lambda=0.5 | First method to produce positive task delta at scale |
+| Negative task conditioning (ColBERT) | Not used | MaxSim already separates tasks; extra forward passes add noise |
 | Cross-task contrastive loss | Not used | Trivially saturates with few tasks, no benefit |
 
 ---
@@ -84,16 +92,8 @@ Per-dataset extensive results:
 **Expected impact:** +0.003-0.008 task delta. Multiplicative with neg_task conditioning.
 **Risk:** Medium. Sub-task boundaries may be arbitrary; exemplar quality matters.
 
-#### 1D. Apply neg_task conditioning to ColBERT trainer
-**Hypothesis:** ColBERT already shows +0.0043 task delta without neg_task conditioning. Adding it should push differentiation even higher since ColBERT has more modulation surface area (per-token FiLM).
-
-**Evidence:** Neg_task went from -0.0001 to +0.0023 for bi-encoder. ColBERT starts at +0.0043 — combining could yield +0.006-0.010.
-
-**Implementation:** Port the neg_task_prob/margin/lambda logic from `trainer.py` to `colbert_trainer.py`.
-
-**Files:** `hydra/training/colbert_trainer.py`
-**Expected impact:** +0.003-0.005 additional task delta on top of ColBERT's existing +0.0043.
-**Risk:** Low. Same mechanism, just applied to ColBERT.
+#### ~~1D. Apply neg_task conditioning to ColBERT trainer~~ — DONE, discarded
+Reduced task delta from +0.0043 to +0.0006. MaxSim already separates tasks; neg_task adds noise.
 
 ### Tier 2: Moderate confidence, worth trying
 
@@ -119,16 +119,8 @@ Per-dataset extensive results:
 **Expected impact:** +0.005-0.015 absolute NDCG (from more training), task delta uncertain.
 **Risk:** Low. Direct FiLM doesn't collapse.
 
-#### 2C. Separate query/doc FiLM parameters
-**Hypothesis:** Asymmetric tasks (e.g., arguana: argument→counter-argument) need different modulation for queries vs docs.
-
-**Evidence:** Previously abandoned because the bi-encoder evaluator calls `encode()` without a role parameter. But the ColBERT evaluator already separates query and doc encoding (`is_query=True/False`), making this cleanly implementable.
-
-**Implementation:** Generate `gamma_q, beta_q, gamma_d, beta_d` from conditioning. Route by `is_query` flag in `apply_head`.
-
-**Files:** `hydra/hypernet/colbert_head_generator.py`, `hydra/student/colbert_retriever.py`
-**Expected impact:** +0.002-0.005 task delta, especially on asymmetric tasks (arguana).
-**Risk:** Medium. Doubles FiLM params. Previously showed no benefit with A/B bottleneck, but direct FiLM + ColBERT may be different. Hard to test on bi-encoder due to evaluator API constraint.
+#### ~~2C. Separate query/doc FiLM parameters~~ — DONE, discarded
+Shared trunk + separate query/doc heads: task delta dropped from +0.0043 to -0.0008. Doubled params dilute gradient with few tasks.
 
 #### 2D. Learning rate schedule (cosine decay)
 **Hypothesis:** Constant LR may be suboptimal. Early training needs higher LR for fast feature learning; late training benefits from lower LR for fine-tuning the FiLM generator.
@@ -189,15 +181,13 @@ Per-dataset extensive results:
 ## Recommended Execution Order
 
 ```
-1. [1D] Neg task conditioning → ColBERT       ← proven technique, apply to stronger architecture
-2. [2D] LR schedule                            ← cheap, universally helpful
-3. [1C] Synthetic task augmentation            ← multiplies training diversity
-4. [2E] Tune neg_task hyperparams              ← quick, may help scidocs/nfcorpus
-5. [3C] ColBERT temperature tuning             ← quick win if mismatched
-6. [2B] Larger ColBERT experiment              ← validate at scale with neg_task
-7. [2A] ColBERT query-only FiLM               ← inference optimization
-8. [2C] Separate query/doc FiLM               ← asymmetric task improvement
-9. [3A] Structurally diverse tasks             ← scaling, needs new data
+1. [2D] LR schedule                            ← cheap, universally helpful
+2. [1C] Synthetic task augmentation            ← multiplies training diversity
+3. [2E] Tune neg_task hyperparams              ← quick, may help scidocs/nfcorpus
+4. [3C] ColBERT temperature tuning             ← quick win if mismatched
+5. [2B] Larger ColBERT experiment              ← validate at scale
+6. [2A] ColBERT query-only FiLM               ← inference optimization
+7. [3A] Structurally diverse tasks             ← scaling, needs new data
 ```
 
-Priority: Apply neg_task conditioning to ColBERT (1D) since it's proven and ColBERT already has the best architecture for task differentiation. Then try LR schedule and task augmentation.
+Priority: LR schedule (2D) is the lowest-risk next step. Then synthetic task augmentation (1C) to multiply diversity for neg_task conditioning on the bi-encoder side.

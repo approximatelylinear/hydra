@@ -16,3 +16,5 @@ c36fb23	architecture	extensive	0.6224	0.3605	0.3706	+0.0002	discard	Warmup-freez
 020f764	architecture	quick	0.6470	0.3716	0.5093	+0.0010	discard	Frozen A/B alpha 0.5 — larger cap doesn't help differentiation
 0d136ff	architecture	quick	0.6483	0.3733	0.5108	+0.0024	keep	Direct FiLM (no A/B) — simplest, no collapse risk, strong task delta
 0d136ff	architecture	extensive	0.6444	0.3711	0.3829	-0.0001	review	Direct FiLM — BEST extensive: no collapse, matches baseline, some per-dataset gains
+colbert-ab	architecture	colbert	0.5909	0.2600	0.3755	+0.0001	discard	ColBERT + A/B bottleneck FiLM — fiqa degraded (-0.017), train/eval mismatch fixed
+colbert-df	architecture	colbert	0.6036	0.2894	0.3944	+0.0043	keep	ColBERT + direct FiLM — all datasets improved or held, fiqa +0.010

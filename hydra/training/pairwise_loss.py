@@ -40,6 +40,33 @@ def pairwise_margin_loss(
     return loss.mean()
 
 
+def pairwise_margin_loss_from_scores(
+    pos_scores: torch.Tensor,
+    neg_scores: torch.Tensor,
+    margins: torch.Tensor | None = None,
+    temperature: float = 0.05,
+) -> torch.Tensor:
+    """Pairwise loss from pre-computed scalar scores (e.g. MaxSim).
+
+    Same formulation as pairwise_margin_loss but takes scores directly
+    instead of computing dot products from embeddings.
+
+    Args:
+        pos_scores: (batch,) positive pair scores
+        neg_scores: (batch,) negative pair scores
+        margins: (batch,) optional teacher margin weights
+        temperature: softmax temperature
+    """
+    loss = -F.logsigmoid((pos_scores - neg_scores) / temperature)
+
+    if margins is not None:
+        weights = torch.clamp(margins, min=0.1)
+        weights = weights / weights.mean()
+        loss = loss * weights
+
+    return loss.mean()
+
+
 def in_batch_contrastive_loss(
     q_embs: torch.Tensor,
     d_embs: torch.Tensor,

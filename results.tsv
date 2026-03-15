@@ -24,3 +24,4 @@ colbert-df	architecture	colbert	0.6036	0.2894	0.3944	+0.0043	keep	ColBERT + dire
 8d422ea	training	quick	0.6498	0.3742	0.5119	+0.0036	keep	Combined contrastive+neg_task — scifact +0.0067 best ever, but fiqa weaker
 8d422ea	training	quick	0.6498	0.3739	0.5119	+0.0033	keep	Neg task prob=0.5 — more balanced (fiqa +0.0024) but lower scifact delta
 8d422ea	training	extensive	0.6452	0.3723	0.3838	+0.0023	keep	Neg task conditioning EXTENSIVE — BEST EVER: positive delta ALL 5 datasets, no collapse
+5faeaef	architecture	colbert	0.6103	0.2789	0.3976	-0.0008	discard	Separate query/doc FiLM — extra params dilute gradient, worse task delta than shared
